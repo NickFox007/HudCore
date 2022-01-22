@@ -14,8 +14,8 @@ native bool HC_IsBusy(int iClient);
 
 public SharedPlugin __pl_hudcore = 
 {
-	name = "shop",
-	file = "shop.smx",
+	name = "hudcore",
+	file = "hudcore.smx",
 #if defined REQUIRE_PLUGIN
 	required = 1,
 #else
