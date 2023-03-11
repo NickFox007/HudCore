@@ -3,57 +3,52 @@
 #pragma newdecls required
 #pragma semicolon 1
 
-Event
-	g_hPanelEvent;
 bool
-	g_bIsPanelReplaced,
 	g_bIsPanelBusy[MAXPLAYERS+1],
 	g_bIsPBBusy[MAXPLAYERS+1];
-char
-	g_sPanelToken[1024];
 
 Handle
-	g_hTimers[MAXPLAYERS+1],
-	g_hTimers2[MAXPLAYERS+1];
+	g_hPanelTimers[MAXPLAYERS+1],
+	g_hBarTimers[MAXPLAYERS+1];
 
 int
 	m_flSimulationTime,
 	m_flProgressBarStartTime,
 	m_iProgressBarDuration,
 	m_iBlockingUseActionInProgress;
-
+	
+Handle
+	g_hFwdOnPanel;
+	
+char
+	g_sNewText[8096];
+	
 //int m_hBombDefuser;
-
 
 public Plugin myinfo =
 {
 	name = "Hud Core",
 	author = "NickFox",
 	description = "Core for hud text messages and not only.",
-	version = "0.3",
+	version = "0.4",
 	url = "https://vk.com/nf_dev"
 }
 
 public APLRes AskPluginLoad2(Handle hMyself, bool bLate, char[] sError, int iErr_max) 
 {
-	CreateNative("HC_AddEndPanelInfo", Native_AddEndPanelInfo);
+	CreateNative("HC_AddEndPanelText", Native_AddEndPanelText);
 	CreateNative("HC_ShowPanelInfo", Native_ShowPanelInfo);
 	CreateNative("HC_ShowPanelStatus", Native_ShowPanelStatus);
 	
 	CreateNative("HC_ShowTimer", Native_ShowTimer);
 	CreateNative("HC_ResetTimer", Native_ResetTimer);
 	CreateNative("HC_IsPBBusy", Native_IsPBBusy);
+	
+	g_hFwdOnPanel = CreateGlobalForward("HC_OnPanel", ET_Hook, Param_String, Param_Cell);
 
 	RegPluginLibrary("hudcore");
 
 	return APLRes_Success;
-}
-
-public int Native_AddEndPanelInfo(Handle hPlugin, int iNumParams)
-{
-	char text[1024];	
-	GetNativeString(1,text,sizeof(text));
-	AddEndPanelInfo(text);
 }
 
 public int Native_ShowPanelInfo(Handle hPlugin, int iNumParams)
@@ -62,6 +57,15 @@ public int Native_ShowPanelInfo(Handle hPlugin, int iNumParams)
 	GetNativeString(2,text,sizeof(text));
 	ShowPanelInfo(GetNativeCell(1), text,GetNativeCell(3));
 }
+
+public int Native_AddEndPanelText(Handle hPlugin, int iNumParams)
+{
+	char text[4096];
+	GetNativeString(1,text,sizeof(text));
+	if(g_sNewText[0] == '\0') FormatEx(g_sNewText, sizeof(g_sNewText), "%s", text);
+	else Format(g_sNewText, sizeof(g_sNewText), "%s<br>%s", g_sNewText, text);
+}
+
 public int Native_ShowPanelStatus(Handle hPlugin, int iNumParams)
 {
 	char text[1024];
@@ -72,16 +76,12 @@ public int Native_ShowPanelStatus(Handle hPlugin, int iNumParams)
 public void OnPluginStart()
 {
 	HookEvent("cs_win_panel_round",OnPanelEvent,EventHookMode_Pre);
+	HookEvent("player_death",OnDeathEvent,EventHookMode_Pre);
 	
 	m_flSimulationTime = FindSendPropInfo("CBaseEntity", "m_flSimulationTime");
 	m_flProgressBarStartTime = FindSendPropInfo("CCSPlayer", "m_flProgressBarStartTime");
 	m_iProgressBarDuration = FindSendPropInfo("CCSPlayer", "m_iProgressBarDuration");
 	m_iBlockingUseActionInProgress = FindSendPropInfo("CCSPlayer", "m_iBlockingUseActionInProgress");
-}
-
-public void OnPluginEnd()
-{
-	//UnhookEvent("cs_win_panel_round",OnPanelEvent,EventHookMode_Pre);
 }
 
 void ShowPanelInfo(int client, const char[] text, float duration)
@@ -95,17 +95,17 @@ void ShowPanelInfo(int client, const char[] text, float duration)
 		for(int i = 1; i < MAXPLAYERS; i++) if(IsClientInGame(i) && !IsFakeClient(i))
 		{
 			hPanelEvent.FireToClient(i);
-			if(g_bIsPanelBusy[i]) delete g_hTimers[i];
+			if(g_bIsPanelBusy[i]) delete g_hPanelTimers[i];
 			else g_bIsPanelBusy[i] = true;
-			g_hTimers[i] = CreateTimer(duration, Timer_DelayHide, i);
+			g_hPanelTimers[i] = CreateTimer(duration, Timer_DelayHide, i);
 		}
 	}
 	else
 	{
 		hPanelEvent.FireToClient(client);
-		if(g_bIsPanelBusy[client]) delete g_hTimers[client];
+		if(g_bIsPanelBusy[client]) delete g_hPanelTimers[client];
 		else g_bIsPanelBusy[client] = true;
-		g_hTimers[client] = CreateTimer(duration, Timer_DelayHide, client);
+		g_hPanelTimers[client] = CreateTimer(duration, Timer_DelayHide, client);
 	}	
 	hPanelEvent.Cancel();	
 }
@@ -133,38 +133,66 @@ void ShowPanelStatus(int client, const char[] text, int duration)
 	hEvent.Cancel();	
 }
 
-void AddEndPanelInfo(const char[] sText)
-{	
-	if(!g_bIsPanelReplaced)
-	{
-		FormatEx(g_sPanelToken, sizeof(g_sPanelToken),"%s", sText);
-		g_bIsPanelReplaced = true;
-	}
-	else Format(g_sPanelToken, sizeof(g_sPanelToken),"%s\n%s", sText, g_sPanelToken);	
+public void OnClientDisconnect(int iClient)
+{
+	if(g_hBarTimers[iClient] != INVALID_HANDLE) KillTimer(g_hBarTimers[iClient]);
+	g_hBarTimers[iClient] = INVALID_HANDLE;
+}
+
+
+public Action OnDeathEvent(Event hEvent,const char[] name, bool dontBroadcast)
+{
+	int iClient = GetClientUserId(hEvent.GetBool("userid"));
+	if(g_hBarTimers[iClient] != INVALID_HANDLE) TriggerTimer(g_hBarTimers[iClient]);
 }
 
 
 public Action OnPanelEvent(Event hEvent,const char[] name, bool dontBroadcast)
-{
-	g_hPanelEvent = CreateEvent("cs_win_panel_round", true);
+{	
+	g_sNewText[0] = '\0';
+	if (CallGlobalPanelForward())	
+	{
+		/*
+		Event hPanelEvent = CreateEvent("cs_win_panel_round", true);
 	
-	g_hPanelEvent.SetBool("show_timer_defend", hEvent.GetBool("show_timer_defend"));
-	g_hPanelEvent.SetBool("show_timer_attack", hEvent.GetBool("show_timer_attack"));
-	g_hPanelEvent.SetInt("timer_time",hEvent.GetInt("timer_time"));
-	g_hPanelEvent.SetInt("final_event",hEvent.GetInt("final_event"));
+		hPanelEvent.SetBool("show_timer_defend", hEvent.GetBool("show_timer_defend"));
+		hPanelEvent.SetBool("show_timer_attack", hEvent.GetBool("show_timer_attack"));
+		hPanelEvent.SetInt("timer_time",hEvent.GetInt("timer_time"));
+		hPanelEvent.SetInt("final_event",hEvent.GetInt("final_event"));
+			
+		hPanelEvent.SetString("funfact_token", g_sNewText);
 		
-	hEvent.GetString("funfact_token", g_sPanelToken, sizeof(g_sPanelToken));
-	
-	g_hPanelEvent.SetInt("funfact_player", hEvent.GetInt("funfact_player"));
-	g_hPanelEvent.SetInt("funfact_data1", hEvent.GetInt("funfact_data1"));
-	g_hPanelEvent.SetInt("funfact_data2", hEvent.GetInt("funfact_data2"));
-	g_hPanelEvent.SetInt("funfact_data3", hEvent.GetInt("funfact_data3"));	
+		hPanelEvent.SetInt("funfact_player", hEvent.GetInt("funfact_player"));
+		hPanelEvent.SetInt("funfact_data1", hEvent.GetInt("funfact_data1"));
+		hPanelEvent.SetInt("funfact_data2", hEvent.GetInt("funfact_data2"));
+		hPanelEvent.SetInt("funfact_data3", hEvent.GetInt("funfact_data3"));	
 		
-	CreateTimer(0.3,Timer_DelayPanel);
-	dontBroadcast = true;
-	return Plugin_Handled;
+		hPanelEvent.Fire(true);		
+		
+		//dontBroadcast = true;
+		hEvent.BroadcastDisabled = true;
+		*/
+		Format(g_sNewText, sizeof(g_sNewText), "<pre>%s</pre>", g_sNewText);
+		hEvent.SetString("funfact_token", g_sNewText);
+		return Plugin_Changed;
+	}
+	else
+		return Plugin_Continue;
 }
 
+
+bool CallGlobalPanelForward()
+{
+	Action iResult;
+	
+	Call_StartForward(g_hFwdOnPanel);
+	Call_Finish(iResult);
+	
+	if(iResult == Plugin_Changed) return true;
+	else return false;
+}
+
+/*
 Action Timer_DelayPanel(Handle timer)
 {
 	g_hPanelEvent.SetString("funfact_token", g_sPanelToken);
@@ -175,6 +203,7 @@ Action Timer_DelayPanel(Handle timer)
 	
 	g_hPanelEvent.Cancel();
 }
+*/
 
 Action Timer_DelayHide(Handle timer, int client)
 {
@@ -212,10 +241,14 @@ public int Native_IsPBBusy(Handle hPlugin, int iNumParams)
 void SetInfoPB(int iClient, float fTime){
 
 	float flGameTime = GetGameTime();	
-	SetEntData(iClient, m_iBlockingUseActionInProgress, 0, 4, true);
 	SetEntDataFloat(iClient, m_flSimulationTime, flGameTime + fTime, true);
+	SetEntData(iClient, m_iBlockingUseActionInProgress, 0, 4, true);
 	SetEntData(iClient, m_iProgressBarDuration, RoundToCeil(fTime),  4, true);
-	SetEntDataFloat(iClient, m_flProgressBarStartTime, flGameTime, true);
+	SetEntDataFloat(iClient, m_flProgressBarStartTime, flGameTime, true);	
+	
+	
+	
+	//ChangeEdictState(iClient, m_iBlockingUseActionInProgress);
 	
 	//SetEntData(iClient, m_hBombDefuser, 0, 4, true);
 }
@@ -226,7 +259,7 @@ public bool ShowPB(int iClient, float fTime){
 	
 	SetInfoPB(iClient,fTime);
 	
-	g_hTimers2[iClient] = CreateTimer(fTime,Timer_Reset,iClient);
+	g_hBarTimers[iClient] = CreateTimer(fTime,Timer_Reset,iClient);
 	
 	g_bIsPBBusy[iClient] = true;
 	return true;
@@ -244,7 +277,9 @@ public bool ResetPB(int iClient){
 	
 	g_bIsPBBusy[iClient] = false;
 	
-	delete g_hTimers2[iClient];
+	//delete g_hBarTimers[iClient];
+	
+	g_hBarTimers[iClient] = INVALID_HANDLE;
 	
 	return true;
 
